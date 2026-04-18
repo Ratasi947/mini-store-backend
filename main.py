@@ -6,6 +6,7 @@ from supabase_client import supabase
 
 app = FastAPI()
 
+# Mở cửa cho Vercel gọi vào
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -14,11 +15,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# KHUÔN MẪU DỮ LIỆU
 class CartItem(BaseModel):
     barcode: str
     name: str
-    qty: int
     price: int
+    qty: int
     total: int
 
 class Order(BaseModel):
@@ -36,56 +38,83 @@ def verify_token(authorization: str = Header(None)):
     
     token = authorization.split(" ")[1]
     try:
-        # 1. Nhờ Supabase xác thực thẻ từ
         user_response = supabase.auth.get_user(token)
+        if not user_response or not user_response.user:
+            raise HTTPException(status_code=401, detail="Token không hợp lệ!")
+            
         user_id = user_response.user.id
         
-        # 2. Tìm xem thẻ này thuộc Cửa hàng số mấy
-        role_response = supabase.table("user_roles").select("*").eq("id", user_id).single().execute()
+        role_response = supabase.table("user_roles").select("*").eq("id", user_id).execute()
         if not role_response.data:
-            raise HTTPException(status_code=403, detail="Tài khoản chưa được phân công vào Cửa hàng nào!")
+            raise HTTPException(status_code=403, detail="Tài khoản chưa được phân công!")
             
-        return {
-            "user_id": user_id,
-            "store_id": role_response.data["store_id"],
-            "role": role_response.data["role"]
-        }
+        return role_response.data[0] 
     except Exception as e:
-        raise HTTPException(status_code=401, detail="Thẻ từ không hợp lệ hoặc đã hết hạn!")
+        raise HTTPException(status_code=401, detail=f"Lỗi xác thực: {str(e)}")
 
-# 1. API: LẤY SẢN PHẨM (Đã gắn Trạm kiểm soát)
+# ==========================================
+# 1. API: LẤY SẢN PHẨM (ĐÃ BỌC THÉP CHỐNG LỖI NONE)
+# ==========================================
 @app.get("/api/products")
 def get_products(user: dict = Depends(verify_token)):
     try:
-        # CHỈ LẤY HÀNG CỦA ĐÚNG CỬA HÀNG ĐÓ
-        result = supabase.table("products").select("*").eq("store_id", user["store_id"]).execute()
+        query = supabase.table("products").select("*")
+        
+        # Xử lý dứt điểm vụ chữ hoa, chữ thường, dư khoảng trắng
+        role = str(user.get("role", "")).strip().lower()
+        store_id = user.get("store_id")
+        
+        if role != "master":
+            # Nếu là nhân viên nhưng store_id bị NULL (None), thì ép nó về số 0 để không bị lỗi chữ "None"
+            safe_store_id = store_id if store_id is not None else 0
+            query = query.eq("store_id", safe_store_id)
+            
+        result = query.execute()
         return {"status": "ok", "data": result.data}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+# ==========================================
 # 2. API: LƯU HÓA ĐƠN
+# ==========================================
 @app.post("/api/checkout")
 def checkout(order: Order, user: dict = Depends(verify_token)):
     try:
         items_data = [item.model_dump() for item in order.items]
+        
+        store_to_save = user.get("store_id")
+        # Chủ tịch bán hàng hoặc người chưa có mã thì lưu tạm vào kho 1
+        if store_to_save is None:
+            store_to_save = 1
+            
         result = supabase.table("orders").insert({
             "total_amount": order.total_amount,
             "cash_given": order.cash_given,
             "change_amount": order.change_amount,
             "items": items_data,
-            "store_id": user["store_id"],      # Gắn mác thuộc Cửa hàng nào
-            "created_by": user["user_id"]      # Gắn mác Nhân viên nào thu tiền
+            "store_id": store_to_save,
+            "created_by": user.get("id")
         }).execute()
         return {"status": "ok", "message": "Thành công"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+# ==========================================
 # 3. API: BÁO CÁO DOANH THU
+# ==========================================
 @app.get("/api/reports")
 def get_reports(user: dict = Depends(verify_token)):
     try:
-        # CHỈ LẤY BÁO CÁO CỦA CỬA HÀNG ĐÓ
-        result = supabase.table("orders").select("*").eq("store_id", user["store_id"]).execute()
+        query = supabase.table("orders").select("*")
+        
+        role = str(user.get("role", "")).strip().lower()
+        store_id = user.get("store_id")
+        
+        if role != "master":
+            safe_store_id = store_id if store_id is not None else 0
+            query = query.eq("store_id", safe_store_id)
+            
+        result = query.execute()
         return {"status": "ok", "data": result.data}
     except Exception as e:
         return {"status": "error", "message": str(e)}
