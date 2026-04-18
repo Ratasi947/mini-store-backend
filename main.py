@@ -118,3 +118,50 @@ def get_reports(user: dict = Depends(verify_token)):
         return {"status": "ok", "data": result.data}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+# KHUÔN MẪU DỮ LIỆU TẠO TÀI KHOẢN (Khai báo dưới class Order)
+class StaffCreate(BaseModel):
+    email: str
+    password: str
+    full_name: str
+    role: str
+    store_id: int
+
+# ==========================================
+# 4. API: TẠO TÀI KHOẢN NHÂN VIÊN MỚI
+# ==========================================
+@app.post("/api/create-staff")
+def create_staff(new_staff: StaffCreate, user: dict = Depends(verify_token)):
+    try:
+        # 1. Kiểm tra An Ninh: Chỉ Master hoặc Owner mới có quyền tạo lính
+        current_role = str(user.get("role", "")).strip().lower()
+        if current_role not in ["master", "owner"]:
+            raise HTTPException(status_code=403, detail="Chỉ Quản lý hoặc Chủ tịch mới được tạo tài khoản!")
+            
+        # NẾU LÀ OWNER: Ép cứng chỉ được tạo nhân viên cho cửa hàng của mình (Phòng ngừa tự hack)
+        target_store_id = new_staff.store_id
+        if current_role == "owner":
+            target_store_id = user.get("store_id")
+
+        # 2. Ra lệnh cho Supabase tạo User Authentication (Sử dụng Service Role Key)
+        auth_response = supabase.auth.admin.create_user({
+            "email": new_staff.email,
+            "password": new_staff.password,
+            "email_confirm": True # Tự động xác nhận Email, không cần bắt lính check hộp thư
+        })
+        
+        # 3. Lấy UID của lính mới vừa tạo
+        new_user_id = auth_response.user.id
+        
+        # 4. Bơm chức vụ và phân trạm vào bảng user_roles
+        supabase.table("user_roles").insert({
+            "id": new_user_id,
+            "store_id": target_store_id,
+            "role": new_staff.role,
+            "full_name": new_staff.full_name
+        }).execute()
+
+        return {"status": "ok", "message": "Tạo tài khoản thành công!"}
+        
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
