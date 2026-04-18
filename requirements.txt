@@ -1,4 +1,4 @@
-supabase==2.4.3
+supabase
 pydantic
 fastapi
 uvicorn
