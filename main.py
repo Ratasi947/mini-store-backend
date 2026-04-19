@@ -344,3 +344,49 @@ def import_stock(barcode: str, stock_data: StockImport, user: dict = Depends(ver
         
         return {"status": "ok", "message": "Nhập kho thành công"}
     except Exception as e: return {"status": "error", "message": str(e)}
+
+# ==========================================
+# KHUÔN MẪU DỮ LIỆU NHÀ CUNG CẤP
+# ==========================================
+class SupplierCreate(BaseModel):
+    name: str
+    representative: str = ""
+    phone_landline: str = ""
+    phone_mobile: str = ""
+    fax: str = ""
+    store_id: int
+
+# ==========================================
+# API 6.4: CẬP NHẬT (SỬA) SẢN PHẨM HIỆN TẠI
+# ==========================================
+@app.put("/api/products/{barcode}")
+def update_product(barcode: str, product: ProductCreate, user: dict = Depends(verify_token)):
+    try:
+        if str(user.get("role")) not in ["master", "owner"]: raise HTTPException(status_code=403, detail="Chỉ Quản lý mới được sửa!")
+        supabase.table("products").update({
+            "name": product.name, "price": product.price, "category": product.category, 
+            "icon": product.icon, "stock_qty": product.stock_qty, 
+            "import_price": product.import_price, "safe_stock": product.safe_stock, 
+            "supplier": product.supplier
+        }).eq("barcode", barcode).execute()
+        return {"status": "ok", "message": "Cập nhật thành công"}
+    except Exception as e: return {"status": "error", "message": str(e)}
+
+# ==========================================
+# API 7: QUẢN LÝ NHÀ CUNG CẤP
+# ==========================================
+@app.get("/api/suppliers")
+def get_suppliers(store_id: int, user: dict = Depends(verify_token)):
+    try:
+        # Lấy NCC của trạm hiện tại (hoặc có thể share chung nếu muốn)
+        result = supabase.table("suppliers").select("*").eq("store_id", store_id).execute()
+        return {"status": "ok", "data": result.data}
+    except Exception as e: return {"status": "error", "message": str(e)}
+
+@app.post("/api/suppliers")
+def create_supplier(supplier: SupplierCreate, user: dict = Depends(verify_token)):
+    try:
+        if str(user.get("role")) not in ["master", "owner"]: raise HTTPException(status_code=403)
+        supabase.table("suppliers").insert(supplier.model_dump()).execute()
+        return {"status": "ok"}
+    except Exception as e: return {"status": "error", "message": str(e)}
