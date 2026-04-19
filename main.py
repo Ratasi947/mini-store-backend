@@ -221,3 +221,47 @@ def get_staff_logs(user: dict = Depends(verify_token)):
         result = query.execute()
         return {"status": "ok", "data": result.data}
     except Exception as e: return {"status": "error", "message": str(e)}
+
+# ==========================================
+# API 5: LẤY LỊCH SỬ BÁN HÀNG (CÓ LỌC NGÀY/THÁNG)
+# ==========================================
+@app.get("/api/sales-history")
+def get_sales_history(
+    start_date: str = None, 
+    end_date: str = None, 
+    store_id: int = None, 
+    user: dict = Depends(verify_token)
+):
+    try:
+        query = supabase.table("orders").select("*").order("created_at", desc=True)
+        
+        # 1. Phân quyền lọc Trạm
+        role = str(user.get("role", "")).strip().lower()
+        if role != "master":
+            # Nếu là lính/quản lý -> Chỉ được xem lịch sử trạm của mình
+            safe_store_id = user.get("store_id") if user.get("store_id") is not None else 0
+            query = query.eq("store_id", safe_store_id)
+        else:
+            # Nếu là Chủ tịch -> Lọc theo Trạm đang chọn trên màn hình
+            if store_id is not None:
+                query = query.eq("store_id", store_id)
+
+        # 2. Lọc theo thời gian (Từ đầu ngày A đến cuối ngày B)
+        if start_date:
+            query = query.gte("created_at", f"{start_date}T00:00:00")
+        if end_date:
+            query = query.lte("created_at", f"{end_date}T23:59:59")
+            
+        result = query.execute()
+        orders = result.data
+        
+        # 3. Dịch UID người bán thành Tên nhân viên
+        users_req = supabase.table("user_roles").select("id, full_name").execute()
+        user_map = {u["id"]: u["full_name"] for u in users_req.data} if users_req.data else {}
+        
+        for o in orders:
+            o["seller_name"] = user_map.get(o.get("created_by"), "Không xác định")
+            
+        return {"status": "ok", "data": orders}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
