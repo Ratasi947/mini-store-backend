@@ -119,49 +119,101 @@ def get_reports(user: dict = Depends(verify_token)):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-# KHUÔN MẪU DỮ LIỆU TẠO TÀI KHOẢN (Khai báo dưới class Order)
+# KHUÔN MẪU DỮ LIỆU NHÂN SỰ
 class StaffCreate(BaseModel):
     email: str
     password: str
     full_name: str
     role: str
     store_id: int
+    dob: str = None
+    hometown: str = None
+
+class StaffUpdate(BaseModel):
+    full_name: str
+    role: str
+    dob: str = None
+    hometown: str = None
+
+# HÀM GHI NHẬT KÝ NỘI BỘ
+def log_action(store_id, action, target_name, performed_by_name, details):
+    try:
+        supabase.table("staff_logs").insert({
+            "store_id": store_id, "action": action, 
+            "target_name": target_name, "performed_by_name": performed_by_name, 
+            "details": details
+        }).execute()
+    except Exception as e:
+        print("Lỗi ghi log:", e)
 
 # ==========================================
-# 4. API: TẠO TÀI KHOẢN NHÂN VIÊN MỚI
+# API 4.1: TẠO TÀI KHOẢN (Đã thêm thông tin mới + Ghi log)
 # ==========================================
 @app.post("/api/create-staff")
 def create_staff(new_staff: StaffCreate, user: dict = Depends(verify_token)):
     try:
-        # 1. Kiểm tra An Ninh: Chỉ Master hoặc Owner mới có quyền tạo lính
-        current_role = str(user.get("role", "")).strip().lower()
-        if current_role not in ["master", "owner"]:
-            raise HTTPException(status_code=403, detail="Chỉ Quản lý hoặc Chủ tịch mới được tạo tài khoản!")
-            
-        # NẾU LÀ OWNER: Ép cứng chỉ được tạo nhân viên cho cửa hàng của mình (Phòng ngừa tự hack)
-        target_store_id = new_staff.store_id
-        if current_role == "owner":
-            target_store_id = user.get("store_id")
+        if str(user.get("role")) not in ["master", "owner"]: raise HTTPException(status_code=403, detail="Không có quyền!")
+        target_store = user.get("store_id") if user.get("role") == "owner" else new_staff.store_id
 
-        # 2. Ra lệnh cho Supabase tạo User Authentication (Sử dụng Service Role Key)
-        auth_response = supabase.auth.admin.create_user({
-            "email": new_staff.email,
-            "password": new_staff.password,
-            "email_confirm": True # Tự động xác nhận Email, không cần bắt lính check hộp thư
-        })
+        auth_response = supabase.auth.admin.create_user({"email": new_staff.email, "password": new_staff.password, "email_confirm": True})
         
-        # 3. Lấy UID của lính mới vừa tạo
-        new_user_id = auth_response.user.id
-        
-        # 4. Bơm chức vụ và phân trạm vào bảng user_roles
         supabase.table("user_roles").insert({
-            "id": new_user_id,
-            "store_id": target_store_id,
-            "role": new_staff.role,
-            "full_name": new_staff.full_name
+            "id": auth_response.user.id, "store_id": target_store,
+            "role": new_staff.role, "full_name": new_staff.full_name,
+            "dob": new_staff.dob, "hometown": new_staff.hometown
         }).execute()
 
-        return {"status": "ok", "message": "Tạo tài khoản thành công!"}
+        log_action(target_store, "TẠO MỚI", new_staff.full_name, user.get("full_name"), f"Tạo tài khoản {new_staff.email} với chức vụ {new_staff.role}")
+        return {"status": "ok", "message": "Thành công"}
+    except Exception as e: return {"status": "error", "message": str(e)}
+
+# ==========================================
+# API 4.2: SỬA TÀI KHOẢN
+# ==========================================
+@app.put("/api/staff/{target_id}")
+def update_staff(target_id: str, staff_data: StaffUpdate, user: dict = Depends(verify_token)):
+    try:
+        if str(user.get("role")) not in ["master", "owner"]: raise HTTPException(status_code=403, detail="Không có quyền!")
         
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+        # Cập nhật thông tin trong bảng user_roles
+        supabase.table("user_roles").update({
+            "full_name": staff_data.full_name, "role": staff_data.role,
+            "dob": staff_data.dob, "hometown": staff_data.hometown
+        }).eq("id", target_id).execute()
+
+        target_store = user.get("store_id") if user.get("role") == "owner" else supabase.table("user_roles").select("store_id").eq("id", target_id).execute().data[0]['store_id']
+        log_action(target_store, "CHỈNH SỬA", staff_data.full_name, user.get("full_name"), f"Cập nhật thông tin/chức vụ thành {staff_data.role}")
+        return {"status": "ok", "message": "Cập nhật thành công"}
+    except Exception as e: return {"status": "error", "message": str(e)}
+
+# ==========================================
+# API 4.3: XÓA TÀI KHOẢN (Đuổi việc)
+# ==========================================
+@app.delete("/api/staff/{target_id}")
+def delete_staff(target_id: str, target_name: str, user: dict = Depends(verify_token)):
+    try:
+        if str(user.get("role")) not in ["master", "owner"]: raise HTTPException(status_code=403, detail="Không có quyền!")
+        if target_id == user.get("id"): raise HTTPException(status_code=403, detail="Không thể tự xóa chính mình!")
+
+        target_store = user.get("store_id") if user.get("role") == "owner" else supabase.table("user_roles").select("store_id").eq("id", target_id).execute().data[0]['store_id']
+        
+        # 1. Xóa thông tin quyền
+        supabase.table("user_roles").delete().eq("id", target_id).execute()
+        # 2. Tiêu hủy hoàn toàn thẻ từ trong hệ thống Auth
+        supabase.auth.admin.delete_user(target_id)
+
+        log_action(target_store, "XÓA (NGHỈ VIỆC)", target_name, user.get("full_name"), f"Đã xóa hoàn toàn tài khoản khỏi hệ thống")
+        return {"status": "ok"}
+    except Exception as e: return {"status": "error", "message": str(e)}
+
+# ==========================================
+# API 4.4: XEM NHẬT KÝ
+# ==========================================
+@app.get("/api/staff-logs")
+def get_staff_logs(user: dict = Depends(verify_token)):
+    try:
+        query = supabase.table("staff_logs").select("*").order("created_at", desc=True)
+        if str(user.get("role")) != "master": query = query.eq("store_id", user.get("store_id"))
+        result = query.execute()
+        return {"status": "ok", "data": result.data}
+    except Exception as e: return {"status": "error", "message": str(e)}
