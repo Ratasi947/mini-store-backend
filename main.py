@@ -514,3 +514,32 @@ def get_goods_receipts(store_id: int, user: dict = Depends(verify_token)):
         res = supabase.table("goods_receipts").select("*").eq("store_id", store_id).order("created_at", desc=True).execute()
         return {"status": "ok", "data": res.data}
     except Exception as e: return {"status": "error", "message": str(e)}
+
+# ==========================================
+# API 8.3: HỦY ĐƠN ĐẶT HÀNG (TRẢ LẠI TRẠNG THÁI CHƯA ĐẶT)
+# ==========================================
+@app.put("/api/purchase-orders/{po_id}/cancel")
+def cancel_po(po_id: int, user: dict = Depends(verify_token)):
+    try:
+        if str(user.get("role")) not in ["master", "owner"]: raise HTTPException(status_code=403)
+        
+        po_req = supabase.table("purchase_orders").select("*").eq("id", po_id).execute()
+        if not po_req.data: raise HTTPException(status_code=404)
+        po = po_req.data[0]
+        
+        if po["status"] in ["COMPLETED", "CANCELLED"]: 
+            raise HTTPException(status_code=400, detail="Không thể hủy đơn đã hoàn thành hoặc đã bị hủy!")
+        
+        # 🚀 THÔNG MINH: Trừ lại số lượng Hàng Đang Về trong Kho
+        for item in po["items"]:
+            pending_qty = item.get("order_qty", 0) - item.get("received_qty", 0)
+            if pending_qty > 0:
+                p_req = supabase.table("products").select("incoming_qty").eq("barcode", item["barcode"]).execute()
+                if p_req.data:
+                    new_incoming = max(0, p_req.data[0].get("incoming_qty", 0) - pending_qty)
+                    supabase.table("products").update({"incoming_qty": new_incoming}).eq("barcode", item["barcode"]).execute()
+        
+        # Đổi trạng thái PO thành Hủy
+        supabase.table("purchase_orders").update({"status": "CANCELLED"}).eq("id", po_id).execute()
+        return {"status": "ok"}
+    except Exception as e: return {"status": "error", "message": str(e)}
