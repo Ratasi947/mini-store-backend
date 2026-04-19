@@ -134,6 +134,7 @@ class StaffUpdate(BaseModel):
     role: str
     dob: str = None
     hometown: str = None
+    log_detail: str = None
 
 # HÀM GHI NHẬT KÝ NỘI BỘ
 def log_action(store_id, action, target_name, performed_by_name, details):
@@ -168,7 +169,7 @@ def create_staff(new_staff: StaffCreate, user: dict = Depends(verify_token)):
     except Exception as e: return {"status": "error", "message": str(e)}
 
 # ==========================================
-# API 4.2: SỬA TÀI KHOẢN
+# API 4.2: SỬA TÀI KHOẢN (Đã nhận Log chi tiết)
 # ==========================================
 @app.put("/api/staff/{target_id}")
 def update_staff(target_id: str, staff_data: StaffUpdate, user: dict = Depends(verify_token)):
@@ -182,10 +183,13 @@ def update_staff(target_id: str, staff_data: StaffUpdate, user: dict = Depends(v
         }).eq("id", target_id).execute()
 
         target_store = user.get("store_id") if user.get("role") == "owner" else supabase.table("user_roles").select("store_id").eq("id", target_id).execute().data[0]['store_id']
-        log_action(target_store, "CHỈNH SỬA", staff_data.full_name, user.get("full_name"), f"Cập nhật thông tin/chức vụ thành {staff_data.role}")
+        
+        # Ghi chính xác những gì Frontend báo cáo
+        chi_tiet_log = staff_data.log_detail if staff_data.log_detail else "Cập nhật thông tin chung"
+        
+        log_action(target_store, "CHỈNH SỬA", staff_data.full_name, user.get("full_name"), chi_tiet_log)
         return {"status": "ok", "message": "Cập nhật thành công"}
     except Exception as e: return {"status": "error", "message": str(e)}
-
 # ==========================================
 # API 4.3: XÓA TÀI KHOẢN (Đuổi việc)
 # ==========================================
