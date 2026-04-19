@@ -289,10 +289,6 @@ class StockImport(BaseModel):
     import_price: int
     supplier: str
 
-class POCreate(BaseModel):
-    store_id: int
-    supplier: str
-    items: list
 # ==========================================
 # CẬP NHẬT API 6.1: TẠO SẢN PHẨM MỚI (Lưu tồn kho)
 # ==========================================
@@ -402,21 +398,119 @@ def create_supplier(supplier: SupplierCreate, user: dict = Depends(verify_token)
     except Exception as e: return {"status": "error", "message": str(e)}
 
 # ==========================================
-# API 8: QUẢN LÝ ĐƠN ĐẶT HÀNG
+# KHUÔN MẪU DỮ LIỆU ĐẶT HÀNG & NHẬP KHO
+# ==========================================
+class POCreate(BaseModel):
+    store_id: int
+    supplier: str
+    items: list
+    expected_date: str = None
+
+class POReceiveItem(BaseModel):
+    barcode: str
+    receive_qty: int
+    import_price: int
+
+class POReceive(BaseModel):
+    po_id: int = None
+    supplier: str
+    items: list[POReceiveItem]
+
+# ==========================================
+# API 8.1: TẠO ĐƠN ĐẶT HÀNG (PO) VÀ CẬP NHẬT NGÀY HÀNG VỀ
 # ==========================================
 @app.post("/api/purchase-orders")
 def create_po(po: POCreate, user: dict = Depends(verify_token)):
     try:
-        supabase.table("purchase_orders").insert({
+        # Lưu Đơn Đặt
+        res = supabase.table("purchase_orders").insert({
             "store_id": po.store_id, "supplier": po.supplier,
-            "items": po.items, "created_by_name": user.get("full_name")
+            "items": po.items, "expected_date": po.expected_date,
+            "created_by_name": user.get("full_name"), "status": "PENDING"
         }).execute()
-        return {"status": "ok"}
+        new_po_id = res.data[0]['id']
+
+        # Cập nhật SP: Cộng hàng đang về & Ghi ngày dự kiến
+        for item in po.items:
+            prod_req = supabase.table("products").select("incoming_qty").eq("barcode", item.get("barcode")).execute()
+            if prod_req.data:
+                curr_inc = prod_req.data[0].get("incoming_qty") or 0
+                supabase.table("products").update({
+                    "incoming_qty": curr_inc + item.get("order_qty"),
+                    "incoming_date": po.expected_date
+                }).eq("barcode", item.get("barcode")).execute()
+
+        return {"status": "ok", "po_id": new_po_id}
     except Exception as e: return {"status": "error", "message": str(e)}
 
 @app.get("/api/purchase-orders")
 def get_po(store_id: int, user: dict = Depends(verify_token)):
     try:
         res = supabase.table("purchase_orders").select("*").eq("store_id", store_id).order("created_at", desc=True).execute()
+        return {"status": "ok", "data": res.data}
+    except Exception as e: return {"status": "error", "message": str(e)}
+
+# ==========================================
+# API 8.2: NHẬP KHO LÔ HÀNG VỀ (GOODS RECEIPT)
+# Tự động đối soát PO, Trừ hàng đang về, Cộng tồn kho
+# ==========================================
+@app.post("/api/receive-goods")
+def receive_goods(gr: POReceive, user: dict = Depends(verify_token)):
+    try:
+        store_to_save = user.get("store_id") if user.get("role") != "master" else 1 # Lấy trạm hiện tại
+        
+        items_log = []
+        for item in gr.items:
+            # 1. Cập nhật tồn kho từng sản phẩm
+            prod_req = supabase.table("products").select("stock_qty, incoming_qty, name").eq("barcode", item.barcode).execute()
+            if prod_req.data:
+                p_data = prod_req.data[0]
+                new_stock = p_data.get("stock_qty", 0) + item.receive_qty
+                # Nếu nhập từ PO, tự động trừ đi số lượng "Đang chờ về", không để âm
+                new_incoming = max(0, p_data.get("incoming_qty", 0) - item.receive_qty) if gr.po_id else p_data.get("incoming_qty", 0)
+                
+                # Nếu hàng đã về hết, xóa ngày dự kiến
+                new_inc_date = None if new_incoming == 0 else supabase.table("products").select("incoming_date").eq("barcode", item.barcode).execute().data[0].get("incoming_date")
+
+                supabase.table("products").update({
+                    "stock_qty": new_stock, "incoming_qty": new_incoming, "incoming_date": new_inc_date,
+                    "import_price": item.import_price, "supplier": gr.supplier,
+                    "last_imported_by": user.get("full_name"), "last_imported_at": datetime.now().isoformat()
+                }).eq("barcode", item.barcode).execute()
+                
+                items_log.append({"barcode": item.barcode, "name": p_data.get("name"), "receive_qty": item.receive_qty, "import_price": item.import_price})
+
+        # 2. Cập nhật trạng thái Đơn Đặt Hàng (nếu có mã PO)
+        if gr.po_id:
+            po_req = supabase.table("purchase_orders").select("items").eq("id", gr.po_id).execute()
+            if po_req.data:
+                po_items = po_req.data[0].get("items")
+                all_completed = True
+                
+                # Đối soát số lượng: Cộng dồn số đã nhận vào JSON của PO
+                for po_item in po_items:
+                    for r_item in gr.items:
+                        if po_item.get("barcode") == r_item.barcode:
+                            po_item["received_qty"] = po_item.get("received_qty", 0) + r_item.receive_qty
+                    
+                    if po_item.get("received_qty", 0) < po_item.get("order_qty", 0):
+                        all_completed = False # Còn món giao thiếu
+                
+                new_status = "COMPLETED" if all_completed else "PARTIAL"
+                supabase.table("purchase_orders").update({"items": po_items, "status": new_status}).eq("id", gr.po_id).execute()
+
+        # 3. Ghi vào Sổ Nhập Kho (Goods Receipt)
+        supabase.table("goods_receipts").insert({
+            "po_id": gr.po_id, "store_id": store_to_save, "supplier": gr.supplier,
+            "items": items_log, "received_by_name": user.get("full_name")
+        }).execute()
+
+        return {"status": "ok", "message": "Nhập kho & Đối soát thành công!"}
+    except Exception as e: return {"status": "error", "message": str(e)}
+
+@app.get("/api/goods-receipts")
+def get_goods_receipts(store_id: int, user: dict = Depends(verify_token)):
+    try:
+        res = supabase.table("goods_receipts").select("*").eq("store_id", store_id).order("created_at", desc=True).execute()
         return {"status": "ok", "data": res.data}
     except Exception as e: return {"status": "error", "message": str(e)}
