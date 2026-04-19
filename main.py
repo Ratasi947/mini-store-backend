@@ -282,31 +282,34 @@ class ProductCreate(BaseModel):
     safe_stock: int = 10
     supplier: str = ""
     incoming_qty: int = 0
+    is_sale: bool = False
     
 class StockImport(BaseModel):
     add_qty: int
     import_price: int
     supplier: str
+
+class POCreate(BaseModel):
+    store_id: int
+    supplier: str
+    items: list
 # ==========================================
 # CẬP NHẬT API 6.1: TẠO SẢN PHẨM MỚI (Lưu tồn kho)
 # ==========================================
 @app.post("/api/products")
 def create_product(product: ProductCreate, user: dict = Depends(verify_token)):
     try:
-        role = str(user.get("role", "")).strip().lower()
-        if role not in ["master", "owner"]: raise HTTPException(status_code=403)
-        target_store = user.get("store_id") if role == "owner" else product.store_id
-        
+        if str(user.get("role")) not in ["master", "owner"]: raise HTTPException(status_code=403)
+        target = user.get("store_id") if user.get("role") == "owner" else product.store_id
         supabase.table("products").insert({
             "barcode": product.barcode, "name": product.name, "price": product.price, 
-            "category": product.category, "icon": product.icon, "store_id": target_store,
+            "category": product.category, "icon": product.icon, "store_id": target,
             "stock_qty": product.stock_qty, "import_price": product.import_price,
             "safe_stock": product.safe_stock, "supplier": product.supplier,
-            "incoming_qty": product.incoming_qty,
-            "last_imported_by": user.get("full_name"),
-            "last_imported_at": datetime.now().isoformat()
+            "incoming_qty": product.incoming_qty, "is_sale": product.is_sale, # <--- Lưu Sale
+            "last_imported_by": user.get("full_name"), "last_imported_at": datetime.now().isoformat()
         }).execute()
-        return {"status": "ok", "message": "Thành công!"}
+        return {"status": "ok"}
     except Exception as e: return {"status": "error", "message": str(e)}
 
 # ==========================================
@@ -372,7 +375,7 @@ def update_product(barcode: str, product: ProductCreate, user: dict = Depends(ve
         if str(user.get("role")) not in ["master", "owner"]: raise HTTPException(status_code=403)
         supabase.table("products").update({
             "name": product.name, "price": product.price, "category": product.category, 
-            "icon": product.icon, "stock_qty": product.stock_qty, 
+            "icon": product.icon, "stock_qty": product.stock_qty, "is_sale": product.is_sale, # <--- Cập nhật Sale
             "import_price": product.import_price, "safe_stock": product.safe_stock, 
             "supplier": product.supplier, "incoming_qty": product.incoming_qty
         }).eq("barcode", barcode).execute()
@@ -396,4 +399,24 @@ def create_supplier(supplier: SupplierCreate, user: dict = Depends(verify_token)
         if str(user.get("role")) not in ["master", "owner"]: raise HTTPException(status_code=403)
         supabase.table("suppliers").insert(supplier.model_dump()).execute()
         return {"status": "ok"}
+    except Exception as e: return {"status": "error", "message": str(e)}
+
+# ==========================================
+# API 8: QUẢN LÝ ĐƠN ĐẶT HÀNG
+# ==========================================
+@app.post("/api/purchase-orders")
+def create_po(po: POCreate, user: dict = Depends(verify_token)):
+    try:
+        supabase.table("purchase_orders").insert({
+            "store_id": po.store_id, "supplier": po.supplier,
+            "items": po.items, "created_by_name": user.get("full_name")
+        }).execute()
+        return {"status": "ok"}
+    except Exception as e: return {"status": "error", "message": str(e)}
+
+@app.get("/api/purchase-orders")
+def get_po(store_id: int, user: dict = Depends(verify_token)):
+    try:
+        res = supabase.table("purchase_orders").select("*").eq("store_id", store_id).order("created_at", desc=True).execute()
+        return {"status": "ok", "data": res.data}
     except Exception as e: return {"status": "error", "message": str(e)}
