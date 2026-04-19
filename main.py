@@ -265,3 +265,47 @@ def get_sales_history(
         return {"status": "ok", "data": orders}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+# KHUÔN MẪU DỮ LIỆU HÀNG HÓA
+class ProductCreate(BaseModel):
+    barcode: str
+    name: str
+    price: int
+    category: str
+    icon: str
+    store_id: int
+
+# ==========================================
+# API 6.1: THÊM SẢN PHẨM MỚI
+# ==========================================
+@app.post("/api/products")
+def create_product(product: ProductCreate, user: dict = Depends(verify_token)):
+    try:
+        role = str(user.get("role", "")).strip().lower()
+        if role not in ["master", "owner"]: raise HTTPException(status_code=403, detail="Chỉ Quản lý mới được nhập kho!")
+        
+        target_store = user.get("store_id") if role == "owner" else product.store_id
+        
+        # Thêm vào Supabase
+        supabase.table("products").insert({
+            "barcode": product.barcode, "name": product.name, 
+            "price": product.price, "category": product.category, 
+            "icon": product.icon, "store_id": target_store
+        }).execute()
+        return {"status": "ok", "message": "Thêm sản phẩm thành công!"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+# ==========================================
+# API 6.2: XÓA SẢN PHẨM
+# ==========================================
+@app.delete("/api/products/{barcode}")
+def delete_product(barcode: str, user: dict = Depends(verify_token)):
+    try:
+        role = str(user.get("role", "")).strip().lower()
+        if role not in ["master", "owner"]: raise HTTPException(status_code=403, detail="Chỉ Quản lý mới được xóa hàng!")
+        
+        supabase.table("products").delete().eq("barcode", barcode).execute()
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
