@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
 from supabase_client import supabase
+from datetime import datetime
 
 app = FastAPI()
 
@@ -75,29 +76,31 @@ def get_products(user: dict = Depends(verify_token)):
         return {"status": "error", "message": str(e)}
 
 # ==========================================
-# 2. API: LƯU HÓA ĐƠN
+# CẬP NHẬT API 2: THANH TOÁN (TỰ ĐỘNG TRỪ KHO)
 # ==========================================
 @app.post("/api/checkout")
 def checkout(order: Order, user: dict = Depends(verify_token)):
     try:
         items_data = [item.model_dump() for item in order.items]
-        
-        store_to_save = user.get("store_id")
-        # Chủ tịch bán hàng hoặc người chưa có mã thì lưu tạm vào kho 1
-        if store_to_save is None:
-            store_to_save = 1
+        store_to_save = user.get("store_id") if user.get("store_id") is not None else 1
             
-        result = supabase.table("orders").insert({
-            "total_amount": order.total_amount,
-            "cash_given": order.cash_given,
-            "change_amount": order.change_amount,
-            "items": items_data,
-            "store_id": store_to_save,
-            "created_by": user.get("id")
+        # Lưu hóa đơn
+        supabase.table("orders").insert({
+            "total_amount": order.total_amount, "cash_given": order.cash_given,
+            "change_amount": order.change_amount, "items": items_data,
+            "store_id": store_to_save, "created_by": user.get("id")
         }).execute()
+        
+        # 🚀 MA THUẬT TRỪ KHO TỰ ĐỘNG
+        for item in order.items:
+            prod_req = supabase.table("products").select("stock_qty").eq("barcode", item.barcode).execute()
+            if prod_req.data:
+                current_stock = prod_req.data[0].get("stock_qty", 0)
+                new_stock = current_stock - item.qty
+                supabase.table("products").update({"stock_qty": new_stock}).eq("barcode", item.barcode).execute()
+
         return {"status": "ok", "message": "Thành công"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    except Exception as e: return {"status": "error", "message": str(e)}
 
 # ==========================================
 # 3. API: BÁO CÁO DOANH THU
@@ -274,27 +277,35 @@ class ProductCreate(BaseModel):
     category: str
     icon: str
     store_id: int
-
+    stock_qty: int = 0
+    import_price: int = 0
+    safe_stock: int = 10
+    supplier: str = ""
+    
+class StockImport(BaseModel):
+    add_qty: int
+    import_price: int
+    supplier: str
 # ==========================================
-# API 6.1: THÊM SẢN PHẨM MỚI
+# CẬP NHẬT API 6.1: TẠO SẢN PHẨM MỚI (Lưu tồn kho)
 # ==========================================
 @app.post("/api/products")
 def create_product(product: ProductCreate, user: dict = Depends(verify_token)):
     try:
         role = str(user.get("role", "")).strip().lower()
         if role not in ["master", "owner"]: raise HTTPException(status_code=403, detail="Chỉ Quản lý mới được nhập kho!")
-        
         target_store = user.get("store_id") if role == "owner" else product.store_id
         
-        # Thêm vào Supabase
         supabase.table("products").insert({
-            "barcode": product.barcode, "name": product.name, 
-            "price": product.price, "category": product.category, 
-            "icon": product.icon, "store_id": target_store
+            "barcode": product.barcode, "name": product.name, "price": product.price, 
+            "category": product.category, "icon": product.icon, "store_id": target_store,
+            "stock_qty": product.stock_qty, "import_price": product.import_price,
+            "safe_stock": product.safe_stock, "supplier": product.supplier,
+            "last_imported_by": user.get("full_name"),
+            "last_imported_at": datetime.now().isoformat()
         }).execute()
         return {"status": "ok", "message": "Thêm sản phẩm thành công!"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    except Exception as e: return {"status": "error", "message": str(e)}
 
 # ==========================================
 # API 6.2: XÓA SẢN PHẨM
@@ -309,3 +320,27 @@ def delete_product(barcode: str, user: dict = Depends(verify_token)):
         return {"status": "ok"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+# ==========================================
+# API 6.3: NHẬP THÊM LÔ HÀNG (Sản phẩm đã có sẵn)
+# ==========================================
+@app.put("/api/products/{barcode}/import")
+def import_stock(barcode: str, stock_data: StockImport, user: dict = Depends(verify_token)):
+    try:
+        if str(user.get("role")) not in ["master", "owner"]: raise HTTPException(status_code=403, detail="Cấp quyền quản lý để thực hiện!")
+        
+        prod_req = supabase.table("products").select("stock_qty").eq("barcode", barcode).execute()
+        if not prod_req.data: raise HTTPException(status_code=404, detail="Không tìm thấy mã vạch này!")
+        
+        new_total_qty = prod_req.data[0].get("stock_qty", 0) + stock_data.add_qty
+        
+        supabase.table("products").update({
+            "stock_qty": new_total_qty,
+            "import_price": stock_data.import_price, # Cập nhật giá vốn mới nhất
+            "supplier": stock_data.supplier,
+            "last_imported_by": user.get("full_name"),
+            "last_imported_at": datetime.now().isoformat()
+        }).eq("barcode", barcode).execute()
+        
+        return {"status": "ok", "message": "Nhập kho thành công"}
+    except Exception as e: return {"status": "error", "message": str(e)}
