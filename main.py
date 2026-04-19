@@ -281,6 +281,7 @@ class ProductCreate(BaseModel):
     import_price: int = 0
     safe_stock: int = 10
     supplier: str = ""
+    incoming_qty: int = 0
     
 class StockImport(BaseModel):
     add_qty: int
@@ -293,7 +294,7 @@ class StockImport(BaseModel):
 def create_product(product: ProductCreate, user: dict = Depends(verify_token)):
     try:
         role = str(user.get("role", "")).strip().lower()
-        if role not in ["master", "owner"]: raise HTTPException(status_code=403, detail="Chỉ Quản lý mới được nhập kho!")
+        if role not in ["master", "owner"]: raise HTTPException(status_code=403)
         target_store = user.get("store_id") if role == "owner" else product.store_id
         
         supabase.table("products").insert({
@@ -301,10 +302,11 @@ def create_product(product: ProductCreate, user: dict = Depends(verify_token)):
             "category": product.category, "icon": product.icon, "store_id": target_store,
             "stock_qty": product.stock_qty, "import_price": product.import_price,
             "safe_stock": product.safe_stock, "supplier": product.supplier,
+            "incoming_qty": product.incoming_qty,
             "last_imported_by": user.get("full_name"),
             "last_imported_at": datetime.now().isoformat()
         }).execute()
-        return {"status": "ok", "message": "Thêm sản phẩm thành công!"}
+        return {"status": "ok", "message": "Thành công!"}
     except Exception as e: return {"status": "error", "message": str(e)}
 
 # ==========================================
@@ -327,22 +329,27 @@ def delete_product(barcode: str, user: dict = Depends(verify_token)):
 @app.put("/api/products/{barcode}/import")
 def import_stock(barcode: str, stock_data: StockImport, user: dict = Depends(verify_token)):
     try:
-        if str(user.get("role")) not in ["master", "owner"]: raise HTTPException(status_code=403, detail="Cấp quyền quản lý để thực hiện!")
+        if str(user.get("role")) not in ["master", "owner"]: raise HTTPException(status_code=403)
         
-        prod_req = supabase.table("products").select("stock_qty").eq("barcode", barcode).execute()
-        if not prod_req.data: raise HTTPException(status_code=404, detail="Không tìm thấy mã vạch này!")
+        prod_req = supabase.table("products").select("stock_qty, incoming_qty").eq("barcode", barcode).execute()
+        if not prod_req.data: raise HTTPException(status_code=404)
         
-        new_total_qty = prod_req.data[0].get("stock_qty", 0) + stock_data.add_qty
+        current_data = prod_req.data[0]
+        new_total_qty = current_data.get("stock_qty", 0) + stock_data.add_qty
+        
+        # Hàng đã về thì trừ ở cột "Đang đặt" đi (không để âm)
+        new_incoming = max(0, current_data.get("incoming_qty", 0) - stock_data.add_qty)
         
         supabase.table("products").update({
             "stock_qty": new_total_qty,
-            "import_price": stock_data.import_price, # Cập nhật giá vốn mới nhất
+            "incoming_qty": new_incoming,
+            "import_price": stock_data.import_price, 
             "supplier": stock_data.supplier,
             "last_imported_by": user.get("full_name"),
             "last_imported_at": datetime.now().isoformat()
         }).eq("barcode", barcode).execute()
         
-        return {"status": "ok", "message": "Nhập kho thành công"}
+        return {"status": "ok"}
     except Exception as e: return {"status": "error", "message": str(e)}
 
 # ==========================================
@@ -362,14 +369,14 @@ class SupplierCreate(BaseModel):
 @app.put("/api/products/{barcode}")
 def update_product(barcode: str, product: ProductCreate, user: dict = Depends(verify_token)):
     try:
-        if str(user.get("role")) not in ["master", "owner"]: raise HTTPException(status_code=403, detail="Chỉ Quản lý mới được sửa!")
+        if str(user.get("role")) not in ["master", "owner"]: raise HTTPException(status_code=403)
         supabase.table("products").update({
             "name": product.name, "price": product.price, "category": product.category, 
             "icon": product.icon, "stock_qty": product.stock_qty, 
             "import_price": product.import_price, "safe_stock": product.safe_stock, 
-            "supplier": product.supplier
+            "supplier": product.supplier, "incoming_qty": product.incoming_qty
         }).eq("barcode", barcode).execute()
-        return {"status": "ok", "message": "Cập nhật thành công"}
+        return {"status": "ok"}
     except Exception as e: return {"status": "error", "message": str(e)}
 
 # ==========================================
