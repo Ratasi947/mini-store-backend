@@ -406,6 +406,7 @@ class POCreate(BaseModel):
     supplier: str
     items: list
     expected_date: str = None
+    note: str = ""
 
 class POReceiveItem(BaseModel):
     barcode: str
@@ -439,7 +440,8 @@ def create_po(po: POCreate, user: dict = Depends(verify_token)):
             "store_id": po.store_id, "supplier": po.supplier,
             "items": po.items, "expected_date": po.expected_date,
             "created_by_name": user.get("full_name"), "status": "PENDING",
-            "purchase_orders_id": custom_po_id # <--- LƯU VÀO DB
+            "purchase_orders_id": custom_po_id,
+            "note": po.note # <--- LƯU GHI CHÚ VÀO DB
         }).execute()
         new_po_id = res.data[0]['id']
 
@@ -554,5 +556,18 @@ def cancel_po(po_id: int, user: dict = Depends(verify_token)):
         
         # Đổi trạng thái PO thành Hủy
         supabase.table("purchase_orders").update({"status": "CANCELLED"}).eq("id", po_id).execute()
+        return {"status": "ok"}
+    except Exception as e: return {"status": "error", "message": str(e)}
+
+# ==========================================
+# API 8.4: CẬP NHẬT GHI CHÚ ĐƠN HÀNG KHI IN LẠI
+# ==========================================
+class PONoteUpdate(BaseModel):
+    note: str
+
+@app.put("/api/purchase-orders/{po_id}/note")
+def update_po_note(po_id: int, payload: PONoteUpdate, user: dict = Depends(verify_token)):
+    try:
+        supabase.table("purchase_orders").update({"note": payload.note}).eq("id", po_id).execute()
         return {"status": "ok"}
     except Exception as e: return {"status": "error", "message": str(e)}
