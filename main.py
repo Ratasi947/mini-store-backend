@@ -417,20 +417,32 @@ class POReceive(BaseModel):
     items: list[POReceiveItem]
 
 # ==========================================
-# API 8.1: TẠO ĐƠN ĐẶT HÀNG (PO) VÀ CẬP NHẬT NGÀY HÀNG VỀ
+# API 8.1: TẠO ĐƠN ĐẶT HÀNG (PO) + SINH MÃ PO TỰ ĐỘNG
 # ==========================================
 @app.post("/api/purchase-orders")
 def create_po(po: POCreate, user: dict = Depends(verify_token)):
     try:
-        # Lưu Đơn Đặt
+        # 1. TẠO MÃ ĐƠN HÀNG CHUẨN ERP (VD: 120260420001)
+        today = datetime.now()
+        date_str = today.strftime("%Y%m%d")
+        start_of_day = today.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        
+        # Đếm số lượng đơn trong ngày của Trạm này
+        records = supabase.table("purchase_orders").select("id").eq("store_id", po.store_id).gte("created_at", start_of_day).execute()
+        daily_seq = len(records.data) + 1
+        
+        custom_po_id = f"{po.store_id}{date_str}{daily_seq:03d}" # Định dạng: [Trạm][YYYYMMDD][00X]
+
+        # 2. LƯU ĐƠN ĐẶT KÈM MÃ VỪA TẠO
         res = supabase.table("purchase_orders").insert({
             "store_id": po.store_id, "supplier": po.supplier,
             "items": po.items, "expected_date": po.expected_date,
-            "created_by_name": user.get("full_name"), "status": "PENDING"
+            "created_by_name": user.get("full_name"), "status": "PENDING",
+            "purchase_orders_id": custom_po_id # <--- LƯU VÀO DB
         }).execute()
         new_po_id = res.data[0]['id']
 
-        # Cập nhật SP: Cộng hàng đang về & Ghi ngày dự kiến
+        # 3. Cập nhật Hàng Đang Về vào SP
         for item in po.items:
             prod_req = supabase.table("products").select("incoming_qty").eq("barcode", item.get("barcode")).execute()
             if prod_req.data:
@@ -440,7 +452,7 @@ def create_po(po: POCreate, user: dict = Depends(verify_token)):
                     "incoming_date": po.expected_date
                 }).eq("barcode", item.get("barcode")).execute()
 
-        return {"status": "ok", "po_id": new_po_id}
+        return {"status": "ok", "po_id": new_po_id, "custom_po_id": custom_po_id}
     except Exception as e: return {"status": "error", "message": str(e)}
 
 @app.get("/api/purchase-orders")
