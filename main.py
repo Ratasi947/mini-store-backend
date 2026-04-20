@@ -572,3 +572,50 @@ def update_po_note(po_id: int, payload: PONoteUpdate, user: dict = Depends(verif
         supabase.table("purchase_orders").update({"note": payload.note}).eq("id", po_id).execute()
         return {"status": "ok"}
     except Exception as e: return {"status": "error", "message": str(e)}
+
+# ==========================================
+# API 9: HỆ THỐNG AUTHENTICATION SAAS (TỰ ĐĂNG KÝ DÀNH CHO ĐỐI TÁC)
+# ==========================================
+class UserRegister(BaseModel):
+    email: str
+    password: str
+    full_name: str
+    store_name: str # Tên cửa hàng của đối tác
+
+@app.post("/api/register")
+def register_owner(user: UserRegister):
+    try:
+        # 1. Đăng ký tài khoản Auth trên Supabase
+        auth_res = supabase.auth.sign_up({
+            "email": user.email,
+            "password": user.password,
+        })
+        
+        # 2. Tạo một Trạm (Store) mới cho Đối tác này
+        # (Giả sử bạn có bảng stores, nếu không có thì bỏ qua bước này và lưu store_id = mã ngẫu nhiên)
+        store_res = supabase.table("stores").insert({"name": user.store_name, "address": "Chưa cập nhật"}).execute()
+        new_store_id = store_res.data[0]['id'] if store_res.data else 999 
+
+        # 3. Ghi thông tin vào bảng users (hoặc profiles) với role = 'owner'
+        supabase.table("users").insert({
+            "email": user.email,
+            "full_name": user.full_name,
+            "role": "owner",
+            "store_id": new_store_id
+        }).execute()
+        
+        return {"status": "ok", "message": "Đăng ký thành công! Vui lòng đăng nhập."}
+    except Exception as e: 
+        return {"status": "error", "message": f"Lỗi đăng ký: {str(e)}"}
+
+class ForgotPassword(BaseModel):
+    email: str
+
+@app.post("/api/forgot-password")
+def forgot_password(payload: ForgotPassword):
+    try:
+        # Gửi email reset password qua Supabase
+        supabase.auth.reset_password_email(payload.email)
+        return {"status": "ok", "message": "Link khôi phục mật khẩu đã được gửi vào Email của bạn!"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
