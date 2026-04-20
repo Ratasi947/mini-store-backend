@@ -360,6 +360,7 @@ class SupplierCreate(BaseModel):
     phone_landline: str = ""
     phone_mobile: str = ""
     fax: str = ""
+    address: str = "" 
     store_id: int
 
 # ==========================================
