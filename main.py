@@ -361,6 +361,7 @@ class SupplierCreate(BaseModel):
     phone_mobile: str = ""
     fax: str = ""
     address: str = "" 
+    email: str = ""
     store_id: int
 
 # ==========================================
