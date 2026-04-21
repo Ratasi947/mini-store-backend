@@ -576,11 +576,14 @@ def update_po_note(po_id: int, payload: PONoteUpdate, user: dict = Depends(verif
 # ==========================================
 # API 9: HỆ THỐNG AUTHENTICATION SAAS (TỰ ĐĂNG KÝ DÀNH CHO ĐỐI TÁC)
 # ==========================================
+
 class UserRegister(BaseModel):
     email: str
     password: str
     full_name: str
-    store_name: str # Tên cửa hàng của đối tác
+    store_name: str
+    phone: str = "" # 🚀 Chờ hứng số điện thoại từ Front-end
+
 
 @app.post("/api/register")
 def register_owner(user: UserRegister):
@@ -591,24 +594,28 @@ def register_owner(user: UserRegister):
             "password": user.password,
         })
         
-        # Bắt lỗi nếu Supabase không tạo được User
         if not auth_res.user:
             return {"status": "error", "message": "Không thể tạo tài khoản trên hệ thống."}
 
-        # 🚀 LẤY UID CHUẨN XÁC TỪ SUPABASE AUTH
         user_uid = auth_res.user.id
 
-        # 2. Tạo một Trạm (Store) mới cho Đối tác này
-        store_res = supabase.table("stores").insert({"name": user.store_name, "address": "Chưa cập nhật"}).execute()
+        # 2. 🚀 LƯU ĐẦY ĐỦ THÔNG TIN CHỦ SỞ HỮU VÀO BẢNG STORES
+        store_res = supabase.table("stores").insert({
+            "name": user.store_name, 
+            "address": "Chưa cập nhật",
+            "owner_name": user.full_name,
+            "owner_email": user.email,
+            "owner_phone": user.phone
+        }).execute()
         new_store_id = store_res.data[0]['id'] if store_res.data else 999 
 
-        # 3. 🚀 GHI THÔNG TIN VÀO BẢNG "user_roles" (SỬA LẠI TÊN BẢNG VÀ GÁN ĐÚNG UID)
+        # 3. 🚀 ĐỒNG THỜI GHI VÀO BẢNG USER_ROLES (Đã sửa lỗi cấp quyền trước đó)
         supabase.table("user_roles").insert({
-            "id": user_uid,  # Bắt buộc phải là UID này để Frontend query đúng
-            "email": user.email, # (Tùy chọn nếu schema của bạn có cột này)
+            "id": user_uid,
             "full_name": user.full_name,
             "role": "owner",
-            "store_id": new_store_id
+            "store_id": new_store_id,
+            "phone": user.phone # Ghi đúp số điện thoại vào đây
         }).execute()
         
         return {"status": "ok", "message": "Đăng ký thành công! Vui lòng đăng nhập."}
