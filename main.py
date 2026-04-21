@@ -591,14 +591,21 @@ def register_owner(user: UserRegister):
             "password": user.password,
         })
         
+        # Bắt lỗi nếu Supabase không tạo được User
+        if not auth_res.user:
+            return {"status": "error", "message": "Không thể tạo tài khoản trên hệ thống."}
+
+        # 🚀 LẤY UID CHUẨN XÁC TỪ SUPABASE AUTH
+        user_uid = auth_res.user.id
+
         # 2. Tạo một Trạm (Store) mới cho Đối tác này
-        # (Giả sử bạn có bảng stores, nếu không có thì bỏ qua bước này và lưu store_id = mã ngẫu nhiên)
         store_res = supabase.table("stores").insert({"name": user.store_name, "address": "Chưa cập nhật"}).execute()
         new_store_id = store_res.data[0]['id'] if store_res.data else 999 
 
-        # 3. Ghi thông tin vào bảng users (hoặc profiles) với role = 'owner'
-        supabase.table("users").insert({
-            "email": user.email,
+        # 3. 🚀 GHI THÔNG TIN VÀO BẢNG "user_roles" (SỬA LẠI TÊN BẢNG VÀ GÁN ĐÚNG UID)
+        supabase.table("user_roles").insert({
+            "id": user_uid,  # Bắt buộc phải là UID này để Frontend query đúng
+            "email": user.email, # (Tùy chọn nếu schema của bạn có cột này)
             "full_name": user.full_name,
             "role": "owner",
             "store_id": new_store_id
