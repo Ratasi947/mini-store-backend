@@ -633,3 +633,83 @@ def forgot_password(payload: ForgotPassword):
         return {"status": "ok", "message": "Link khôi phục mật khẩu đã được gửi vào Email của bạn!"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+# ==========================================
+# KHUÔN MẪU DỮ LIỆU SỔ QUỸ
+# ==========================================
+class TransactionCreate(BaseModel):
+    store_id: int
+    type: str  # 'IN' (Thu) hoặc 'OUT' (Chi)
+    category: str # 'MANUAL_IN', 'MANUAL_OUT'
+    amount: int
+    payment_method: str # 'CASH', 'BANK', 'CARD', 'QR'
+    note: str = ""
+
+class POPayment(BaseModel):
+    amount: int
+    payment_method: str
+    note: str = ""
+
+# ==========================================
+# API 10.1: LẤY LỊCH SỬ THU CHI
+# ==========================================
+@app.get("/api/transactions")
+def get_transactions(store_id: int, user: dict = Depends(verify_token)):
+    try:
+        res = supabase.table("transactions").select("*").eq("store_id", store_id).order("created_at", desc=True).execute()
+        return {"status": "ok", "data": res.data}
+    except Exception as e: return {"status": "error", "message": str(e)}
+
+# ==========================================
+# API 10.2: TẠO PHIẾU THU/CHI THỦ CÔNG
+# ==========================================
+@app.post("/api/transactions")
+def create_transaction(trans: TransactionCreate, user: dict = Depends(verify_token)):
+    try:
+        if str(user.get("role")) not in ["master", "owner", "admin"]: 
+            raise HTTPException(status_code=403, detail="Chỉ quản lý mới được lập phiếu Thu/Chi!")
+        
+        supabase.table("transactions").insert({
+            "store_id": trans.store_id, "type": trans.type, "category": trans.category,
+            "amount": trans.amount, "payment_method": trans.payment_method,
+            "note": trans.note, "created_by_name": user.get("full_name")
+        }).execute()
+        return {"status": "ok"}
+    except Exception as e: return {"status": "error", "message": str(e)}
+
+# ==========================================
+# API 10.3: XUẤT TIỀN TRẢ NỢ NHÀ CUNG CẤP (PO)
+# ==========================================
+@app.post("/api/purchase-orders/{po_id}/pay")
+def pay_purchase_order(po_id: int, payment: POPayment, user: dict = Depends(verify_token)):
+    try:
+        # 1. Lấy thông tin PO hiện tại
+        po_req = supabase.table("purchase_orders").select("*").eq("id", po_id).execute()
+        if not po_req.data: raise HTTPException(status_code=404, detail="Không tìm thấy PO")
+        po = po_req.data[0]
+        
+        # Nếu tổng tiền PO chưa có (do tạo từ bản cũ), tính lại tổng tiền
+        total_val = po.get("total_value", 0)
+        if total_val == 0:
+            total_val = sum(item.get("order_qty", 0) * item.get("order_price", 0) for item in po.get("items", []))
+            supabase.table("purchase_orders").update({"total_value": total_val}).eq("id", po_id).execute()
+
+        new_paid = po.get("paid_amount", 0) + payment.amount
+        new_status = "PAID" if new_paid >= total_val else "PARTIAL"
+
+        # 2. Cập nhật số tiền đã trả vào PO
+        supabase.table("purchase_orders").update({
+            "paid_amount": new_paid, "payment_status": new_status
+        }).eq("id", po_id).execute()
+
+        # 3. Ghi một dòng "CHI TIỀN" vào Sổ Quỹ
+        supabase.table("transactions").insert({
+            "store_id": po["store_id"], "type": "OUT", "category": "PO_PAYMENT",
+            "amount": payment.amount, "payment_method": payment.payment_method,
+            "reference_id": po.get("purchase_orders_id") or str(po["id"]),
+            "note": payment.note or f"Thanh toán tiền nhập hàng cho {po['supplier']}",
+            "created_by_name": user.get("full_name")
+        }).execute()
+
+        return {"status": "ok", "message": "Thanh toán thành công!"}
+    except Exception as e: return {"status": "error", "message": str(e)}
